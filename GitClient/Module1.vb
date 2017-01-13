@@ -1,4 +1,5 @@
-﻿Imports System.IO
+﻿Imports System.Data.SqlClient
+Imports System.IO
 Imports LibGit2Sharp
 Imports LibGit2Sharp.Handlers
 Imports Microsoft.SqlServer.Management.Common
@@ -7,12 +8,14 @@ Imports Newtonsoft.Json
 
 Module Module1
 
-    Public ConfigSetting As ConfigSettingDefinition = New ConfigSettingDefinition
+    Dim ConfigSetting As ConfigSettingDefinition = New ConfigSettingDefinition
+    Dim SBBuffer As Text.StringBuilder = New Text.StringBuilder
+
 
     Class DatabaseDefinition
         Public Name As String = ""
     End Class
-	
+
     Class SQLServerDefinition
         Public Name As String = ""
         Public User As String = ""
@@ -23,7 +26,7 @@ Module Module1
             Databases = New List(Of DatabaseDefinition)
         End Sub
     End Class
-	
+
     Class ConfigSettingDefinition
         Public RepositoryWorkingDirectory As String = ""
         Public CommitAuthorName As String = ""
@@ -53,43 +56,12 @@ Module Module1
             Dim ParentFolder = Path.Combine(ConfigSetting.RepositoryWorkingDirectory, Server.Name + "\Jobs")
             My.Computer.FileSystem.CreateDirectory(ParentFolder)
 
-            Dim AllJobs As Dictionary(Of String, String) = New Dictionary(Of String, String)
+            ScriptAllJobs(Server, repo, oSQLServer, ParentFolder)
 
-            For Each Job As Agent.Job In oSQLServer.JobServer.Jobs
+            ParentFolder = Path.Combine(ConfigSetting.RepositoryWorkingDirectory, Server.Name)
+            My.Computer.FileSystem.CreateDirectory(ParentFolder)
 
-                Dim JobDescriptionStr = ""
-                Dim JobDescription = Job.Script()
-
-                For Each StrLine In JobDescription
-                    JobDescriptionStr = JobDescriptionStr + IIf(String.IsNullOrEmpty(JobDescriptionStr), "", vbNewLine) + StrLine
-                Next
-
-                Dim FileNameShort = Job.JobID.ToString + ".sql"
-
-                Dim FileName = Path.Combine(ParentFolder, FileNameShort)
-
-                My.Computer.FileSystem.WriteAllText(FileName, JobDescriptionStr, False)
-
-                AllJobs.Add(FileNameShort, Job.Name)
-
-                'Commit change
-                CommitChanges(repo, "Job: " + Job.Name)
-
-            Next
-
-            Dim AllFiles = My.Computer.FileSystem.GetFiles(ParentFolder)
-            For Each File In AllFiles
-
-                Dim FI = My.Computer.FileSystem.GetFileInfo(File)
-
-                If Not AllJobs.ContainsKey(FI.Name) Then
-                    My.Computer.FileSystem.DeleteFile(File)
-                End If
-
-            Next
-
-            'commit deletion
-            CommitChanges(repo, "Deleted jobs")
+            ScriptAllLogins(Server, repo, oSQLServer, ParentFolder)
 
             oSQLServer = Nothing
 
@@ -102,6 +74,91 @@ Module Module1
         options.CredentialsProvider = Function(_url, _user, _cred) New UsernamePasswordCredentials() With {.Username = ConfigSetting.GitHubUserName, .Password = ConfigSetting.GitHubPassword}
         repo.Network.Push(Remote, "refs/heads/master", options)
 
+
+    End Sub
+    Private Sub OnInfoMessage(ByVal sender As Object, ByVal e As System.Data.SqlClient.SqlInfoMessageEventArgs)
+
+        SBBuffer.AppendLine(e.Message)
+
+    End Sub
+
+    Sub ScriptAllLogins(Server As SQLServerDefinition, repo As Repository, oSQLServer As Server, ParentFolder As String)
+
+        'verify that "sp_help_revlogin" and "sp_hexadecimal" exists in master database
+        'if not - deploy it
+        If oSQLServer.Databases("master").StoredProcedures.Item("sp_help_revlogin") Is Nothing Then
+
+            Dim SprocText = My.Computer.FileSystem.ReadAllText(Path.Combine(My.Application.Info.DirectoryPath, "sp_help_revlogin.sql"))
+
+            oSQLServer.ConnectionContext.ExecuteNonQuery(SprocText)
+
+        End If
+
+        If oSQLServer.Databases("master").StoredProcedures.Item("sp_hexadecimal") Is Nothing Then
+
+            Dim SprocText = My.Computer.FileSystem.ReadAllText(Path.Combine(My.Application.Info.DirectoryPath, "sp_hexadecimal.sql"))
+
+            oSQLServer.ConnectionContext.ExecuteNonQuery(SprocText)
+
+        End If
+
+        SBBuffer.Clear()
+
+        AddHandler oSQLServer.ConnectionContext.InfoMessage, New SqlInfoMessageEventHandler(AddressOf OnInfoMessage)
+        oSQLServer.ConnectionContext.ExecuteNonQuery("master.dbo.sp_help_revlogin")
+        RemoveHandler oSQLServer.ConnectionContext.InfoMessage, New SqlInfoMessageEventHandler(AddressOf OnInfoMessage)
+
+        Dim Result = SBBuffer.ToString
+
+        Dim FileName = Path.Combine(ParentFolder, "sql-logins.sql")
+
+        My.Computer.FileSystem.WriteAllText(FileName, Result, False)
+
+        'Commit change
+        CommitChanges(repo, Server.Name + ": SQL logins")
+
+    End Sub
+
+
+    Sub ScriptAllJobs(Server As SQLServerDefinition, repo As Repository, oSQLServer As Server, ParentFolder As String)
+
+        Dim AllJobs As Dictionary(Of String, String) = New Dictionary(Of String, String)
+
+        For Each Job As Agent.Job In oSQLServer.JobServer.Jobs
+
+            Dim JobDescriptionStr = ""
+            Dim JobDescription = Job.Script()
+
+            For Each StrLine In JobDescription
+                JobDescriptionStr = JobDescriptionStr + IIf(String.IsNullOrEmpty(JobDescriptionStr), "", vbNewLine) + StrLine
+            Next
+
+            Dim FileNameShort = Job.JobID.ToString + ".sql"
+
+            Dim FileName = Path.Combine(ParentFolder, FileNameShort)
+
+            My.Computer.FileSystem.WriteAllText(FileName, JobDescriptionStr, False)
+
+            AllJobs.Add(FileNameShort, Job.Name)
+
+            'Commit change
+            CommitChanges(repo, Server.Name + ": Job: " + Job.Name)
+
+        Next
+
+        Dim AllFiles = My.Computer.FileSystem.GetFiles(ParentFolder)
+        For Each File In AllFiles
+
+            Dim FI = My.Computer.FileSystem.GetFileInfo(File)
+
+            If Not AllJobs.ContainsKey(FI.Name) Then
+                My.Computer.FileSystem.DeleteFile(File)
+            End If
+
+        Next
+
+        'commit deletion
+        CommitChanges(repo, Server.Name + ": Deleted jobs")
 
     End Sub
 
