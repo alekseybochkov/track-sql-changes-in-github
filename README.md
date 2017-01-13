@@ -1,6 +1,6 @@
-This solution scripts objects from SQL Server into text files and commits it into GitHub repository.
-The idea is to have some level of change tracking without using complicated and expensive tools for source control.
-Objects to script:
+<p>This solution scripts objects from SQL Server into text files and commits it into GitHub repository.</p>
+<p>The idea is to have some level of change tracking without using complicated and expensive tools for source control.</p>
+<p>Objects to script:</p>
 - on SQL Server level
   * SQL Jobs
   * SQL Logins
